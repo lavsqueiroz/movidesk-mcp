@@ -28,22 +28,22 @@ function loadPrompt(filename: string): string {
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
-    // ─── ORQUESTRADOR ────────────────────────────────────────
+    // ─── ORQUESTRADOR ────────────────────────────────────
     {
       name: 'get_context',
-      description: 'Carrega o contexto e apresentacao de um papel especifico. Use quando o usuario pedir para se contextualizar, ou quando um papel for acionado (n1, admin). Sem papel especifico, carrega o orquestrador com todas as opcoes.',
+      description: 'Carrega o contexto de um papel. Use quando o usuario pedir para se contextualizar ou acionar um papel. Sem papel especifico carrega o orquestrador.',
       inputSchema: {
         type: 'object',
         properties: {
           papel: {
             type: 'string',
-            description: 'Papel a carregar: "orquestrador" (padrao), "n1" ou "admin"',
-            enum: ['orquestrador', 'n1', 'admin'],
+            description: 'Papel a carregar: orquestrador (padrao), n1, n2, n3, admin',
+            enum: ['orquestrador', 'n1', 'n2', 'n3', 'admin'],
           },
         },
       },
     },
-    // ─── N1 TOOLS ────────────────────────────────────────────
+    // ─── N1 ────────────────────────────────────────────
     {
       name: 'list_n1_tickets',
       description: 'N1: Lista tickets da fila N1 (Novo, Em atendimento, Aguardando com justificativas de retorno/priorizacao).',
@@ -56,7 +56,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'analyze_ticket_n1',
-      description: 'N1: Analisa UM ticket. Retorna contexto completo + prompt N1. Gere a analise, mostre ao usuario e peca aprovacao antes de criar nota.',
+      description: 'N1: Analisa UM ticket. Retorna contexto + base de conhecimento N1. Gere a analise, mostre ao usuario e peca aprovacao antes de criar nota.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -67,7 +67,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'create_note_approved',
-      description: 'N1: Cria nota INTERNA no ticket. Use SOMENTE apos aprovacao explicita do usuario. Nunca visivel ao cliente.',
+      description: 'N1: Cria nota INTERNA no ticket. Use SOMENTE apos aprovacao explicita do usuario.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -77,14 +77,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['ticket_id', 'note_content'],
       },
     },
-    // ─── ADMIN TOOLS ─────────────────────────────────────────
+    // ─── ADMIN ─────────────────────────────────────────
     {
       name: 'admin_list_tickets',
-      description: 'ADMIN: Lista tickets do Movidesk. Filtra por status se informado (Novo, Em atendimento, Aguardando, Resolvido, Fechado, Cancelado) ou lista todos.',
+      description: 'ADMIN: Lista tickets do Movidesk. Filtra por status se informado ou lista todos.',
       inputSchema: {
         type: 'object',
         properties: {
-          status: { type: 'string', description: 'Status para filtrar. Vazio = todos.' },
+          status: { type: 'string', description: 'Status para filtrar (Novo, Em atendimento, Aguardando, Resolvido, Fechado, Cancelado). Vazio = todos.' },
           limit: { type: 'number', description: 'Maximo de tickets (padrao: 50)', default: 50 },
         },
       },
@@ -109,21 +109,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
 
-      // ─── ORQUESTRADOR ─────────────────────────────────────
+      // ─── ORQUESTRADOR ────────────────────────────────
       case 'get_context': {
         const papel = (args as any).papel || 'orquestrador';
         const arquivos: Record<string, string> = {
           orquestrador: 'ORQUESTRADOR.md',
-          n1: 'PAPEL_N1.md',
-          admin: 'PAPEL_ADMIN.md',
+          n1: 'Agentes/N1_PAPEL.md',
+          n2: 'Agentes/N2_PAPEL.md',
+          n3: 'Agentes/N3_PAPEL.md',
+          admin: 'Agentes/ADMIN_PAPEL.md',
         };
         const prompt = loadPrompt(arquivos[papel] || 'ORQUESTRADOR.md');
-        return {
-          content: [{ type: 'text', text: prompt }],
-        };
+        return { content: [{ type: 'text', text: prompt }] };
       }
 
-      // ─── N1 ──────────────────────────────────────────────
+      // ─── N1 ──────────────────────────────────────
       case 'list_n1_tickets': {
         const limit = Math.min((args as any).limit || 10, 50);
         const [novos, emAtendimento, aguardando] = await Promise.all([
@@ -136,11 +136,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             type: 'text',
             text: JSON.stringify({
               total: novos.length + emAtendimento.length + aguardando.length,
-              resumo: {
-                novo: novos.length,
-                em_atendimento: emAtendimento.length,
-                aguardando_n1: aguardando.length,
-              },
+              resumo: { novo: novos.length, em_atendimento: emAtendimento.length, aguardando_n1: aguardando.length },
               tickets: [
                 ...novos.map(t => ({ ...t, grupo: 'Novo' })),
                 ...emAtendimento.map(t => ({ ...t, grupo: 'Em atendimento' })),
@@ -156,13 +152,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!ticketId) throw new Error('ticket_id e obrigatorio');
         const ticket = await movideskClient.getTicket(ticketId);
         if (!ticket) throw new Error(`Ticket ${ticketId} nao encontrado`);
-        const promptN1 = loadPrompt('N1_SUPPORT_AGENT.md');
+        const baseConhecimento = loadPrompt('Agentes/N1_BASE_CONHECIMENTO.md');
         const descricao = ticket.actions && ticket.actions.length > 0
           ? ticket.actions[0].description : 'Sem descricao disponivel';
         return {
           content: [{
             type: 'text',
-            text: `# TICKET ${ticketId}\n\n- **ID**: ${ticket.id}\n- **Assunto**: ${ticket.subject}\n- **Status**: ${ticket.status}\n- **Justification**: ${ticket.justification || 'N/A'}\n- **Criado em**: ${ticket.createdDate}\n\n## Descricao\n\n${descricao}\n\n---\n\n## Instrucoes\n\nAnalise o ticket seguindo o prompt N1 abaixo. Gere a orientacao para o analista e a resposta para o cliente. Mostre tudo ao usuario e pergunte: "Posso criar esta nota interna no ticket ${ticketId}?" Aguarde aprovacao antes de chamar create_note_approved.\n\n---\n\n${promptN1}`,
+            text: `# TICKET ${ticketId}\n\n- **ID**: ${ticket.id}\n- **Assunto**: ${ticket.subject}\n- **Status**: ${ticket.status}\n- **Justification**: ${ticket.justification || 'N/A'}\n- **Criado em**: ${ticket.createdDate}\n\n## Descricao\n\n${descricao}\n\n---\n\n${baseConhecimento}`,
           }],
         };
       }
@@ -187,7 +183,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         throw new Error('Falha ao criar nota');
       }
 
-      // ─── ADMIN ───────────────────────────────────────────
+      // ─── ADMIN ──────────────────────────────────
       case 'admin_list_tickets': {
         const status = (args as any).status || null;
         const limit = Math.min((args as any).limit || 50, 200);
@@ -199,11 +195,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               total: tickets.length,
               filtro_status: status || 'todos',
               tickets: tickets.map(t => ({
-                id: t.id,
-                subject: t.subject,
-                status: t.status,
-                justification: t.justification || null,
-                createdDate: t.createdDate,
+                id: t.id, subject: t.subject, status: t.status,
+                justification: t.justification || null, createdDate: t.createdDate,
               })),
             }, null, 2),
           }],
@@ -215,9 +208,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!ticketId) throw new Error('ticket_id e obrigatorio');
         const ticket = await movideskClient.getTicket(ticketId);
         if (!ticket) throw new Error(`Ticket ${ticketId} nao encontrado`);
-        return {
-          content: [{ type: 'text', text: JSON.stringify(ticket, null, 2) }],
-        };
+        return { content: [{ type: 'text', text: JSON.stringify(ticket, null, 2) }] };
       }
 
       default:
