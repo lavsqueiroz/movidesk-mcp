@@ -48,7 +48,8 @@ export class MovideskClient {
   async getStatusConfigs(): Promise<any[]> {
     try {
       console.error('Buscando status...');
-      const response = await this.httpClient.get('/ticketStatus', {
+      // Endpoint correto da API do Movidesk
+      const response = await this.httpClient.get('/tickets/statusConfigs', {
         params: { token: this.token },
       });
       const statuses = Array.isArray(response.data) ? response.data : [response.data];
@@ -56,28 +57,46 @@ export class MovideskClient {
       return statuses;
     } catch (error: any) {
       console.error('Erro ao buscar status:', error.message);
-      if (error.response) console.error('Data:', error.response.data);
+      if (error.response) {
+        console.error('HTTP Status:', error.response.status);
+        console.error('Data:', JSON.stringify(error.response.data));
+      }
       throw error;
     }
   }
 
   async listTickets(params: ListTicketsParams = {}): Promise<MovideskTicket[]> {
     try {
-      const { limit = 10, status } = params;
-      console.error(`Buscando tickets status=${status}...`);
+      const { limit = 50, status } = params;
+      console.error(`Buscando tickets...`);
+
+      // Busca todos e filtra localmente para evitar problemas com $filter na API
       const response = await this.httpClient.get('/tickets', {
         params: {
           token: this.token,
           $select: 'id,protocol,subject,status,createdDate',
-          $top: limit,
-          ...(status && { $filter: `status eq '${status}'` }),
+          $top: 200,
         },
       });
-      const tickets = Array.isArray(response.data) ? response.data : [response.data];
-      console.error(`${tickets.length} tickets retornados`);
+
+      let tickets = Array.isArray(response.data) ? response.data : [response.data];
+
+      // Filtra por status localmente se informado
+      if (status) {
+        tickets = tickets.filter((t: any) =>
+          (t.status || '').toLowerCase() === status.toLowerCase()
+        );
+      }
+
+      tickets = tickets.slice(0, limit);
+      console.error(`${tickets.length} tickets retornados (status=${status})`);
       return tickets;
     } catch (error: any) {
       console.error('Erro ao listar tickets:', error.message);
+      if (error.response) {
+        console.error('HTTP Status:', error.response.status);
+        console.error('Data:', JSON.stringify(error.response.data));
+      }
       throw error;
     }
   }
@@ -86,22 +105,31 @@ export class MovideskClient {
     try {
       const { limit = 10, justificativas } = params;
       console.error('Buscando tickets Aguardando N1...');
+
       const response = await this.httpClient.get('/tickets', {
         params: {
           token: this.token,
           $select: 'id,protocol,subject,status,justificativa,createdDate',
-          $top: 100,
-          $filter: `status eq 'Aguardando'`,
+          $top: 200,
         },
       });
+
       const todos = Array.isArray(response.data) ? response.data : [response.data];
       const filtrados = todos
-        .filter((t: any) => justificativas.includes(t.justificativa || ''))
+        .filter((t: any) =>
+          (t.status || '').toLowerCase() === 'aguardando' &&
+          justificativas.some(j => j.toLowerCase() === (t.justificativa || '').toLowerCase())
+        )
         .slice(0, limit);
+
       console.error(`${filtrados.length} tickets Aguardando N1 encontrados`);
       return filtrados;
     } catch (error: any) {
       console.error('Erro:', error.message);
+      if (error.response) {
+        console.error('HTTP Status:', error.response.status);
+        console.error('Data:', JSON.stringify(error.response.data));
+      }
       throw error;
     }
   }
@@ -114,6 +142,10 @@ export class MovideskClient {
       return response.data;
     } catch (error: any) {
       console.error(`Erro ao buscar ticket ${ticketId}:`, error.message);
+      if (error.response) {
+        console.error('HTTP Status:', error.response.status);
+        console.error('Data:', JSON.stringify(error.response.data));
+      }
       return null;
     }
   }
