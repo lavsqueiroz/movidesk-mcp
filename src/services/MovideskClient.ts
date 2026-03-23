@@ -9,7 +9,7 @@ export interface MovideskTicket {
   protocol?: string;
   subject?: string;
   status?: string;
-  justificativa?: string;
+  justification?: string; // campo correto da API Movidesk
   createdDate?: string;
   actions?: any[];
 }
@@ -37,6 +37,7 @@ export class MovideskClient {
 
   /**
    * Lista tickets filtrando por status localmente
+   * $select obrigatorio na API do Movidesk
    */
   async listTicketsByStatus(status: string, limit: number = 10): Promise<MovideskTicket[]> {
     try {
@@ -63,6 +64,7 @@ export class MovideskClient {
 
   /**
    * Lista tickets Aguardando filtrados por justificativas do N1
+   * Campo correto: justification (não justificativa)
    */
   async listTicketsAguardandoN1(justificativas: string[], limit: number = 10): Promise<MovideskTicket[]> {
     try {
@@ -70,7 +72,7 @@ export class MovideskClient {
       const response = await this.httpClient.get('/tickets', {
         params: {
           token: this.token,
-          $select: 'id,protocol,subject,status,justificativa,createdDate',
+          $select: 'id,protocol,subject,status,justification,createdDate',
           $top: 200,
         },
       });
@@ -78,7 +80,7 @@ export class MovideskClient {
       const filtered = all
         .filter((t: any) =>
           (t.status || '').toLowerCase() === 'aguardando' &&
-          justificativas.some(j => j.toLowerCase() === (t.justificativa || '').toLowerCase())
+          justificativas.some(j => j.toLowerCase() === (t.justification || '').toLowerCase())
         )
         .slice(0, limit);
       console.error(`${filtered.length} tickets Aguardando N1`);
@@ -99,7 +101,7 @@ export class MovideskClient {
       const response = await this.httpClient.get('/tickets', {
         params: {
           token: this.token,
-          $select: 'id,protocol,subject,status,justificativa,createdDate',
+          $select: 'id,protocol,subject,status,justification,createdDate',
           $top: 500,
         },
       });
