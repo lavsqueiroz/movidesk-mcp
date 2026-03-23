@@ -14,7 +14,7 @@ const __dirname = path.dirname(__filename);
 const movideskClient = getMovideskClient();
 
 const server = new Server(
-  { name: 'movidesk-queue', version: '2.3.0' },
+  { name: 'movidesk-queue', version: '2.4.0' },
   { capabilities: { tools: {} } }
 );
 
@@ -26,12 +26,25 @@ function loadPrompt(filename: string): string {
   return fs.readFileSync(promptPath, 'utf-8');
 }
 
+// Carrega o papel + webhook juntos para garantir que o agente sabe como agir
+function loadContext(papel: string): string {
+  const arquivos: Record<string, string> = {
+    orquestrador: 'ORQUESTRADOR.md',
+    n1: 'Agentes/N1_PAPEL.md',
+    n2: 'Agentes/N2_PAPEL.md',
+    n3: 'Agentes/N3_PAPEL.md',
+    admin: 'Agentes/ADMIN_PAPEL.md',
+  };
+  const papelContent = loadPrompt(arquivos[papel] || 'ORQUESTRADOR.md');
+  const webhookContent = loadPrompt('Webhook/AGENTE_WEBHOOK.md');
+  return `${papelContent}\n\n---\n\n${webhookContent}`;
+}
+
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
-    // ─── ORQUESTRADOR ────────────────────────────────────
     {
       name: 'get_context',
-      description: 'Carrega o contexto de um papel. Use quando o usuario pedir para se contextualizar ou acionar um papel. Sem papel especifico carrega o orquestrador.',
+      description: 'Carrega o contexto completo de um papel incluindo mapeamento de chamadas. Use sempre que o usuario pedir para se contextualizar ou acionar um papel.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -43,10 +56,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
-    // ─── N1 ────────────────────────────────────────────
     {
       name: 'list_n1_tickets',
-      description: 'N1: Lista tickets da fila N1 (Novo, Em atendimento, Aguardando com justificativas de retorno/priorizacao).',
+      description: 'N1: Lista tickets da fila N1 - retorna Novo, Em atendimento e Aguardando com justificativas N1 (Retorno do cliente, Retorno do newcon, Priorizacao).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -56,7 +68,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'analyze_ticket_n1',
-      description: 'N1: Analisa UM ticket. Retorna contexto + base de conhecimento N1. Gere a analise, mostre ao usuario e peca aprovacao antes de criar nota.',
+      description: 'N1: Busca dados completos de um ticket e carrega base de conhecimento N1. Use o retorno para gerar a analise, mostrar ao usuario e pedir aprovacao antes de criar nota.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -67,24 +79,23 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'create_note_approved',
-      description: 'N1: Cria nota INTERNA no ticket. Use SOMENTE apos aprovacao explicita do usuario.',
+      description: 'N1: Cria nota INTERNA no ticket. Use SOMENTE apos aprovacao explicita do usuario (sim, pode, aprovo, ok).',
       inputSchema: {
         type: 'object',
         properties: {
           ticket_id: { type: 'string', description: 'ID do ticket' },
-          note_content: { type: 'string', description: 'Conteudo da nota interna' },
+          note_content: { type: 'string', description: 'Conteudo completo da nota interna gerada' },
         },
         required: ['ticket_id', 'note_content'],
       },
     },
-    // ─── ADMIN ─────────────────────────────────────────
     {
       name: 'admin_list_tickets',
-      description: 'ADMIN: Lista tickets do Movidesk. Filtra por status se informado ou lista todos.',
+      description: 'ADMIN: Lista tickets do Movidesk. Informe status para filtrar (Novo, Em atendimento, Aguardando, Resolvido, Fechado, Cancelado) ou deixe vazio para todos.',
       inputSchema: {
         type: 'object',
         properties: {
-          status: { type: 'string', description: 'Status para filtrar (Novo, Em atendimento, Aguardando, Resolvido, Fechado, Cancelado). Vazio = todos.' },
+          status: { type: 'string', description: 'Status para filtrar. Vazio = todos.' },
           limit: { type: 'number', description: 'Maximo de tickets (padrao: 50)', default: 50 },
         },
       },
@@ -109,21 +120,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
 
-      // ─── ORQUESTRADOR ────────────────────────────────
       case 'get_context': {
         const papel = (args as any).papel || 'orquestrador';
-        const arquivos: Record<string, string> = {
-          orquestrador: 'ORQUESTRADOR.md',
-          n1: 'Agentes/N1_PAPEL.md',
-          n2: 'Agentes/N2_PAPEL.md',
-          n3: 'Agentes/N3_PAPEL.md',
-          admin: 'Agentes/ADMIN_PAPEL.md',
-        };
-        const prompt = loadPrompt(arquivos[papel] || 'ORQUESTRADOR.md');
-        return { content: [{ type: 'text', text: prompt }] };
+        // Carrega o papel + webhook juntos
+        const context = loadContext(papel);
+        return { content: [{ type: 'text', text: context }] };
       }
 
-      // ─── N1 ──────────────────────────────────────
       case 'list_n1_tickets': {
         const limit = Math.min((args as any).limit || 10, 50);
         const [novos, emAtendimento, aguardando] = await Promise.all([
@@ -152,13 +155,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!ticketId) throw new Error('ticket_id e obrigatorio');
         const ticket = await movideskClient.getTicket(ticketId);
         if (!ticket) throw new Error(`Ticket ${ticketId} nao encontrado`);
-        const baseConhecimento = loadPrompt('Agentes/N1_BASE_CONHECIMENTO.md');
+        // Carrega a base de conhecimento N1 do proprio papel
+        const n1Papel = loadPrompt('Agentes/N1_PAPEL.md');
         const descricao = ticket.actions && ticket.actions.length > 0
           ? ticket.actions[0].description : 'Sem descricao disponivel';
         return {
           content: [{
             type: 'text',
-            text: `# TICKET ${ticketId}\n\n- **ID**: ${ticket.id}\n- **Assunto**: ${ticket.subject}\n- **Status**: ${ticket.status}\n- **Justification**: ${ticket.justification || 'N/A'}\n- **Criado em**: ${ticket.createdDate}\n\n## Descricao\n\n${descricao}\n\n---\n\n${baseConhecimento}`,
+            text: `# DADOS DO TICKET ${ticketId}\n\n- ID: ${ticket.id}\n- Assunto: ${ticket.subject}\n- Status: ${ticket.status}\n- Justification: ${ticket.justification || 'N/A'}\n- Criado em: ${ticket.createdDate}\n\n## Descricao\n\n${descricao}\n\n---\n\n## Base de Conhecimento N1 (use para gerar a analise)\n\n${n1Papel}`,
           }],
         };
       }
@@ -183,7 +187,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         throw new Error('Falha ao criar nota');
       }
 
-      // ─── ADMIN ──────────────────────────────────
       case 'admin_list_tickets': {
         const status = (args as any).status || null;
         const limit = Math.min((args as any).limit || 50, 200);
@@ -225,7 +228,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('Movidesk MCP v2.3 - Orquestrador + N1 + Admin');
+  console.error('Movidesk MCP v2.4 - Pronto!');
 }
 
 main().catch((error) => {
