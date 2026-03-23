@@ -14,11 +14,11 @@ const __dirname = path.dirname(__filename);
 const movideskClient = getMovideskClient();
 
 const server = new Server(
-  { name: 'movidesk-queue', version: '2.5.0' },
+  { name: 'movidesk-queue', version: '2.6.0' },
   { capabilities: { tools: {} } }
 );
 
-// Justificativas N1 - nomes EXATOS conforme configurado no Movidesk
+// Justificativas N1 - nomes EXATOS conforme CSV exportado do Movidesk
 const N1_JUSTIFICATIVAS = [
   'Retorno do cliente',
   'Retorno NewCon',
@@ -62,12 +62,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'list_n1_tickets',
-      description: 'N1: Lista tickets da fila N1 - retorna Novo, Em atendimento e Aguardando com justificativas N1 (Retorno do cliente, Retorno NewCon, Priorizacao).',
+      description: 'N1: Lista TODOS os tickets da fila N1 - status Novo, Em atendimento, e Aguardando com justificativas Retorno do cliente / Retorno NewCon / Priorizacao. Retorna todos sem limite.',
       inputSchema: {
         type: 'object',
-        properties: {
-          limit: { type: 'number', description: 'Maximo de tickets por grupo (padrao: 10)', default: 10 },
-        },
+        properties: {},
       },
     },
     {
@@ -95,7 +93,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'admin_list_tickets',
-      description: 'ADMIN: Lista tickets do Movidesk. Informe status para filtrar (Novo, Em atendimento, Aguardando, Resolvido, Fechado, Cancelado) ou deixe vazio para todos.',
+      description: 'ADMIN: Lista tickets do Movidesk. Informe status para filtrar (Novo, Em atendimento, Aguardando, Resolvido, Fechado, Cancelado, Recorrente) ou deixe vazio para todos.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -131,18 +129,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'list_n1_tickets': {
-        const limit = Math.min((args as any).limit || 10, 50);
+        // Busca TODOS os tickets de cada status sem limite
         const [novos, emAtendimento, aguardando] = await Promise.all([
-          movideskClient.listTicketsByStatus('Novo', limit),
-          movideskClient.listTicketsByStatus('Em atendimento', limit),
-          movideskClient.listTicketsAguardandoN1(N1_JUSTIFICATIVAS, limit),
+          movideskClient.listTicketsByStatus('Novo'),
+          movideskClient.listTicketsByStatus('Em atendimento'),
+          movideskClient.listTicketsAguardandoN1(N1_JUSTIFICATIVAS),
         ]);
         return {
           content: [{
             type: 'text',
             text: JSON.stringify({
               total: novos.length + emAtendimento.length + aguardando.length,
-              resumo: { novo: novos.length, em_atendimento: emAtendimento.length, aguardando_n1: aguardando.length },
+              resumo: {
+                novo: novos.length,
+                em_atendimento: emAtendimento.length,
+                aguardando_n1: aguardando.length,
+              },
               tickets: [
                 ...novos.map(t => ({ ...t, grupo: 'Novo' })),
                 ...emAtendimento.map(t => ({ ...t, grupo: 'Em atendimento' })),
@@ -230,7 +232,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('Movidesk MCP v2.5 - Pronto!');
+  console.error('Movidesk MCP v2.6 - Pronto!');
 }
 
 main().catch((error) => {

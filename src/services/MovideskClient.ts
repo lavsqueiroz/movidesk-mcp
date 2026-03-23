@@ -5,9 +5,9 @@
  * Campos confirmados pela documentacao:
  * - id, protocol, subject, status, justification, createdDate
  * - $select obrigatorio ao listar multiplos tickets
- * - $filter suporta OData: status eq 'Novo', justification eq 'Retorno do cliente'
- * - $top: limite de registros por request
- * - Nota interna: PATCH /tickets com action type=2, isInternal=true
+ * - $filter suporta OData: status eq 'Novo'
+ * - $top: limite de registros por request (max recomendado: 1000)
+ * - Nota interna: PATCH /tickets com action type=2, isInternal=true, id=0
  * - Rota /tickets retorna tickets com lastupdate < 90 dias
  */
 
@@ -45,10 +45,10 @@ export class MovideskClient {
   }
 
   /**
-   * Lista tickets filtrando por status via $filter da API
-   * Mais eficiente e preciso do que filtrar localmente
+   * Lista TODOS os tickets de um status via $filter da API.
+   * Usa $top alto para garantir que nao perde nenhum ticket.
    */
-  async listTicketsByStatus(status: string, limit: number = 10): Promise<MovideskTicket[]> {
+  async listTicketsByStatus(status: string): Promise<MovideskTicket[]> {
     try {
       console.error(`Buscando tickets status=${status}...`);
       const response = await this.httpClient.get('/tickets', {
@@ -56,7 +56,7 @@ export class MovideskClient {
           token: this.token,
           $select: 'id,protocol,subject,status,justification,createdDate',
           $filter: `status eq '${status}'`,
-          $top: limit,
+          $top: 1000,
         },
       });
       const tickets = Array.isArray(response.data) ? response.data : [response.data];
@@ -70,35 +70,31 @@ export class MovideskClient {
   }
 
   /**
-   * Lista tickets Aguardando com justificativas do N1 via $filter da API
-   * Justificativas N1 (nomes exatos do Movidesk):
+   * Lista TODOS os tickets Aguardando com justificativas do N1.
+   * Busca todos os Aguardando via $filter e filtra localmente pelas justificativas.
+   * Justificativas N1 (nomes EXATOS do Movidesk):
    *   - Retorno do cliente
    *   - Retorno NewCon
    *   - Priorizacao
    */
-  async listTicketsAguardandoN1(justificativas: string[], limit: number = 10): Promise<MovideskTicket[]> {
+  async listTicketsAguardandoN1(justificativas: string[]): Promise<MovideskTicket[]> {
     try {
       console.error('Buscando tickets Aguardando N1...');
-
-      // Busca todos os Aguardando e filtra localmente pelas justificativas
-      // pois OData nao suporta bem o OR em justification na API do Movidesk
       const response = await this.httpClient.get('/tickets', {
         params: {
           token: this.token,
           $select: 'id,protocol,subject,status,justification,createdDate',
           $filter: `status eq 'Aguardando'`,
-          $top: 200,
+          $top: 1000,
         },
       });
 
       const all = Array.isArray(response.data) ? response.data : [response.data];
-      const filtered = all
-        .filter((t: any) =>
-          justificativas.some(j =>
-            j.toLowerCase() === (t.justification || '').toLowerCase()
-          )
+      const filtered = all.filter((t: any) =>
+        justificativas.some(j =>
+          j.toLowerCase() === (t.justification || '').toLowerCase()
         )
-        .slice(0, limit);
+      );
 
       console.error(`${filtered.length} tickets Aguardando N1 (de ${all.length} Aguardando total)`);
       return filtered;
@@ -110,7 +106,8 @@ export class MovideskClient {
   }
 
   /**
-   * ADMIN: Lista tickets com filtro de status opcional via $filter da API
+   * ADMIN: Lista tickets com filtro de status opcional.
+   * limit controla quantos retornar para o usuario.
    */
   async adminListTickets(status: string | null, limit: number = 50): Promise<MovideskTicket[]> {
     try {
@@ -138,7 +135,8 @@ export class MovideskClient {
   }
 
   /**
-   * Busca ticket completo por ID (sem $select para retornar todos os campos incluindo actions)
+   * Busca ticket completo por ID.
+   * Sem $select para retornar todos os campos incluindo actions/descricao.
    */
   async getTicket(ticketId: string): Promise<MovideskTicket | null> {
     try {
@@ -154,16 +152,15 @@ export class MovideskClient {
   }
 
   /**
-   * Cria nota interna no ticket
-   * Documentacao confirma: type=2 = nota interna, isInternal=true
-   * id=0 = nova action (nao alteracao)
+   * Cria nota interna no ticket.
+   * type=2 = nota interna, isInternal=true, id=0 = nova action.
    */
   async createInternalNote(params: CreateNoteParams): Promise<boolean> {
     try {
       console.error(`Criando nota no ticket ${params.ticketId}`);
       const action = {
-        id: 0,       // 0 = nova action
-        type: 2,     // 2 = nota interna (confirmado pela documentacao)
+        id: 0,
+        type: 2,
         description: params.description,
         isInternal: true,
       };
