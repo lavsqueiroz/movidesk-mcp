@@ -18,28 +18,24 @@ const server = new Server(
   { capabilities: { tools: {} } }
 );
 
+// Justificativas do status Aguardando que pertencem ao N1
 const N1_JUSTIFICATIVAS = ['Retorno do cliente', 'Retorno do newcon', 'Priorizacao'];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
-      name: 'get_status_configs',
-      description: 'Busca todos os status de tickets configurados no Movidesk, incluindo se exigem justificativa ou nao.',
-      inputSchema: { type: 'object', properties: {} },
-    },
-    {
       name: 'list_n1_tickets',
-      description: 'Lista tickets sob responsabilidade do agente N1: status Novo, Em atendimento, e Aguardando com justificativas Retorno do cliente / Retorno do newcon / Priorizacao.',
+      description: 'Lista tickets sob responsabilidade do N1: Novo, Em atendimento, e Aguardando com justificativas de retorno do cliente/newcon/priorizacao.',
       inputSchema: {
         type: 'object',
         properties: {
-          limit: { type: 'number', description: 'Maximo de tickets por status (padrao: 10)', default: 10 },
+          limit: { type: 'number', description: 'Maximo de tickets por grupo (padrao: 10)', default: 10 },
         },
       },
     },
     {
       name: 'analyze_ticket_n1',
-      description: 'Analisa UM ticket usando o agente N1. Retorna contexto + prompt N1. Gere a analise, mostre ao usuario e peca aprovacao antes de criar a nota.',
+      description: 'Analisa UM ticket usando o agente N1. Passe o ID do ticket. Gera orientacao para o analista e resposta para o cliente. Pede aprovacao antes de criar nota.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -50,7 +46,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'create_note_approved',
-      description: 'Cria nota INTERNA no ticket. Use SOMENTE apos aprovacao explicita do usuario. A nota e sempre interna, nunca visivel ao cliente.',
+      description: 'Cria nota INTERNA no ticket. Use SOMENTE apos aprovacao explicita do usuario. Nunca visivel ao cliente.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -69,34 +65,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
 
-      case 'get_status_configs': {
-        const statuses = await movideskClient.getStatusConfigs();
-        return { content: [{ type: 'text', text: JSON.stringify(statuses, null, 2) }] };
-      }
-
       case 'list_n1_tickets': {
         const limit = Math.min((args as any).limit || 10, 50);
         const [novos, emAtendimento, aguardando] = await Promise.all([
-          movideskClient.listTickets({ limit, status: 'Novo' }),
-          movideskClient.listTickets({ limit, status: 'Em atendimento' }),
-          movideskClient.listTicketsByJustificativas({ limit, justificativas: N1_JUSTIFICATIVAS }),
+          movideskClient.listTicketsByStatus('Novo', limit),
+          movideskClient.listTicketsByStatus('Em atendimento', limit),
+          movideskClient.listTicketsAguardandoN1(N1_JUSTIFICATIVAS, limit),
         ]);
-        const todos = [
-          ...novos.map(t => ({ ...t, _grupo: 'Novo' })),
-          ...emAtendimento.map(t => ({ ...t, _grupo: 'Em atendimento' })),
-          ...aguardando.map(t => ({ ...t, _grupo: 'Aguardando' })),
-        ];
         return {
           content: [{
             type: 'text',
             text: JSON.stringify({
-              total: todos.length,
-              resumo: { novo: novos.length, em_atendimento: emAtendimento.length, aguardando_n1: aguardando.length },
-              tickets: todos.map(t => ({
-                id: t.id, subject: t.subject, status: t.status,
-                justificativa: (t as any).justificativa || null,
-                grupo: (t as any)._grupo, createdDate: t.createdDate,
-              })),
+              total: novos.length + emAtendimento.length + aguardando.length,
+              resumo: {
+                novo: novos.length,
+                em_atendimento: emAtendimento.length,
+                aguardando_n1: aguardando.length,
+              },
+              tickets: [
+                ...novos.map(t => ({ ...t, grupo: 'Novo' })),
+                ...emAtendimento.map(t => ({ ...t, grupo: 'Em atendimento' })),
+                ...aguardando.map(t => ({ ...t, grupo: 'Aguardando' })),
+              ],
             }, null, 2),
           }],
         };
@@ -114,7 +104,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{
             type: 'text',
-            text: `# TICKET ${ticketId}\n\n- **ID**: ${ticket.id}\n- **Assunto**: ${ticket.subject}\n- **Status**: ${ticket.status}\n- **Justificativa**: ${(ticket as any).justificativa || 'N/A'}\n- **Criado em**: ${ticket.createdDate}\n\n## Descricao\n\n${descricao}\n\n---\n\n## Instrucoes\n\n1. Analise o ticket seguindo o prompt N1 abaixo\n2. Gere a orientacao para o analista e a resposta para o cliente\n3. Mostre o resultado ao usuario\n4. Pergunte: "Posso criar esta nota interna no ticket ${ticketId}?"\n5. Aguarde aprovacao antes de chamar create_note_approved\n\n---\n\n${promptN1}`,
+            text: `# TICKET ${ticketId}\n\n- **ID**: ${ticket.id}\n- **Assunto**: ${ticket.subject}\n- **Status**: ${ticket.status}\n- **Justificativa**: ${ticket.justification || 'N/A'}\n- **Criado em**: ${ticket.createdDate}\n\n## Descricao\n\n${descricao}\n\n---\n\n## Instrucoes\n\nAnalise o ticket seguindo o prompt N1 abaixo. Gere a orientacao para o analista e a resposta para o cliente. Mostre tudo ao usuario e pergunte: "Posso criar esta nota interna no ticket ${ticketId}?" Aguarde aprovacao antes de chamar create_note_approved.\n\n---\n\n${promptN1}`,
           }],
         };
       }
