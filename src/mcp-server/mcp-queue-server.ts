@@ -14,11 +14,16 @@ const __dirname = path.dirname(__filename);
 const movideskClient = getMovideskClient();
 
 const server = new Server(
-  { name: 'movidesk-queue', version: '2.4.0' },
+  { name: 'movidesk-queue', version: '2.5.0' },
   { capabilities: { tools: {} } }
 );
 
-const N1_JUSTIFICATIVAS = ['Retorno do cliente', 'Retorno do newcon', 'Priorizacao'];
+// Justificativas N1 - nomes EXATOS conforme configurado no Movidesk
+const N1_JUSTIFICATIVAS = [
+  'Retorno do cliente',
+  'Retorno NewCon',
+  'Priorização',
+];
 
 function loadPrompt(filename: string): string {
   const promptPath = path.join(__dirname, '../../prompts', filename);
@@ -26,7 +31,6 @@ function loadPrompt(filename: string): string {
   return fs.readFileSync(promptPath, 'utf-8');
 }
 
-// Carrega o papel + webhook juntos para garantir que o agente sabe como agir
 function loadContext(papel: string): string {
   const arquivos: Record<string, string> = {
     orquestrador: 'ORQUESTRADOR.md',
@@ -58,7 +62,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'list_n1_tickets',
-      description: 'N1: Lista tickets da fila N1 - retorna Novo, Em atendimento e Aguardando com justificativas N1 (Retorno do cliente, Retorno do newcon, Priorizacao).',
+      description: 'N1: Lista tickets da fila N1 - retorna Novo, Em atendimento e Aguardando com justificativas N1 (Retorno do cliente, Retorno NewCon, Priorizacao).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -122,7 +126,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'get_context': {
         const papel = (args as any).papel || 'orquestrador';
-        // Carrega o papel + webhook juntos
         const context = loadContext(papel);
         return { content: [{ type: 'text', text: context }] };
       }
@@ -155,14 +158,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!ticketId) throw new Error('ticket_id e obrigatorio');
         const ticket = await movideskClient.getTicket(ticketId);
         if (!ticket) throw new Error(`Ticket ${ticketId} nao encontrado`);
-        // Carrega a base de conhecimento N1 do proprio papel
         const n1Papel = loadPrompt('Agentes/N1_PAPEL.md');
         const descricao = ticket.actions && ticket.actions.length > 0
           ? ticket.actions[0].description : 'Sem descricao disponivel';
         return {
           content: [{
             type: 'text',
-            text: `# DADOS DO TICKET ${ticketId}\n\n- ID: ${ticket.id}\n- Assunto: ${ticket.subject}\n- Status: ${ticket.status}\n- Justification: ${ticket.justification || 'N/A'}\n- Criado em: ${ticket.createdDate}\n\n## Descricao\n\n${descricao}\n\n---\n\n## Base de Conhecimento N1 (use para gerar a analise)\n\n${n1Papel}`,
+            text: `# DADOS DO TICKET ${ticketId}\n\n- ID: ${ticket.id}\n- Assunto: ${ticket.subject}\n- Status: ${ticket.status}\n- Justification: ${ticket.justification || 'N/A'}\n- Criado em: ${ticket.createdDate}\n\n## Descricao\n\n${descricao}\n\n---\n\n## Base de Conhecimento N1\n\n${n1Papel}`,
           }],
         };
       }
@@ -228,7 +230,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('Movidesk MCP v2.4 - Pronto!');
+  console.error('Movidesk MCP v2.5 - Pronto!');
 }
 
 main().catch((error) => {
