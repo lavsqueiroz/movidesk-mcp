@@ -4,12 +4,12 @@
 
 import axios, { AxiosInstance } from 'axios';
 
-interface MovideskTicket {
+export interface MovideskTicket {
   id: string;
   protocol?: string;
   subject?: string;
   status?: string;
-  justification?: string;
+  justificativa?: string;
   createdDate?: string;
   actions?: any[];
 }
@@ -35,81 +35,107 @@ export class MovideskClient {
     });
   }
 
-  // Busca tickets por status usando $filter correto da API
-  async listTicketsByStatus(status: string, limit = 10): Promise<MovideskTicket[]> {
+  /**
+   * Lista tickets filtrando por status localmente
+   */
+  async listTicketsByStatus(status: string, limit: number = 10): Promise<MovideskTicket[]> {
     try {
       console.error(`Buscando tickets status=${status}...`);
       const response = await this.httpClient.get('/tickets', {
         params: {
           token: this.token,
-          $select: 'id,protocol,subject,status,justification,createdDate',
-          $top: limit,
-          $filter: `status eq '${status}'`,
+          $select: 'id,protocol,subject,status,createdDate',
+          $top: 200,
         },
       });
-      const tickets = Array.isArray(response.data) ? response.data : [response.data];
-      console.error(`${tickets.length} tickets retornados`);
-      return tickets;
+      const all = Array.isArray(response.data) ? response.data : [response.data];
+      const filtered = all
+        .filter((t: any) => (t.status || '').toLowerCase() === status.toLowerCase())
+        .slice(0, limit);
+      console.error(`${filtered.length} tickets com status=${status}`);
+      return filtered;
     } catch (error: any) {
       console.error('Erro ao listar tickets:', error.message);
-      if (error.response) {
-        console.error('HTTP Status:', error.response.status);
-        console.error('Data:', JSON.stringify(error.response.data));
-      }
+      if (error.response) console.error('HTTP:', error.response.status, JSON.stringify(error.response.data));
       throw error;
     }
   }
 
-  // Busca tickets Aguardando e filtra por justificativas N1 localmente
-  async listTicketsAguardandoN1(justificativas: string[], limit = 10): Promise<MovideskTicket[]> {
+  /**
+   * Lista tickets Aguardando filtrados por justificativas do N1
+   */
+  async listTicketsAguardandoN1(justificativas: string[], limit: number = 10): Promise<MovideskTicket[]> {
     try {
-      console.error('Buscando tickets Aguardando...');
+      console.error('Buscando tickets Aguardando N1...');
       const response = await this.httpClient.get('/tickets', {
         params: {
           token: this.token,
-          $select: 'id,protocol,subject,status,justification,createdDate',
-          $top: 100,
-          $filter: `status eq 'Aguardando'`,
+          $select: 'id,protocol,subject,status,justificativa,createdDate',
+          $top: 200,
         },
       });
-      const todos = Array.isArray(response.data) ? response.data : [response.data];
-      const filtrados = todos
-        .filter((t: any) => justificativas.includes(t.justification || ''))
+      const all = Array.isArray(response.data) ? response.data : [response.data];
+      const filtered = all
+        .filter((t: any) =>
+          (t.status || '').toLowerCase() === 'aguardando' &&
+          justificativas.some(j => j.toLowerCase() === (t.justificativa || '').toLowerCase())
+        )
         .slice(0, limit);
-      console.error(`${filtrados.length} tickets Aguardando N1 encontrados`);
-      return filtrados;
+      console.error(`${filtered.length} tickets Aguardando N1`);
+      return filtered;
     } catch (error: any) {
       console.error('Erro:', error.message);
-      if (error.response) {
-        console.error('HTTP Status:', error.response.status);
-        console.error('Data:', JSON.stringify(error.response.data));
-      }
+      if (error.response) console.error('HTTP:', error.response.status, JSON.stringify(error.response.data));
       throw error;
     }
   }
 
-  // Busca ticket por ID
+  /**
+   * ADMIN: Lista todos os tickets, com filtro de status opcional
+   */
+  async adminListTickets(status: string | null, limit: number = 50): Promise<MovideskTicket[]> {
+    try {
+      console.error(`ADMIN: Buscando tickets... status=${status || 'todos'}`);
+      const response = await this.httpClient.get('/tickets', {
+        params: {
+          token: this.token,
+          $select: 'id,protocol,subject,status,justificativa,createdDate',
+          $top: 500,
+        },
+      });
+      let all = Array.isArray(response.data) ? response.data : [response.data];
+      if (status) {
+        all = all.filter((t: any) => (t.status || '').toLowerCase() === status.toLowerCase());
+      }
+      const result = all.slice(0, limit);
+      console.error(`${result.length} tickets retornados`);
+      return result;
+    } catch (error: any) {
+      console.error('Erro ADMIN:', error.message);
+      if (error.response) console.error('HTTP:', error.response.status, JSON.stringify(error.response.data));
+      throw error;
+    }
+  }
+
+  /**
+   * Busca ticket por ID
+   */
   async getTicket(ticketId: string): Promise<MovideskTicket | null> {
     try {
       const response = await this.httpClient.get('/tickets', {
-        params: {
-          token: this.token,
-          id: ticketId,
-          $select: 'id,protocol,subject,status,justification,createdDate,actions',
-        },
+        params: { token: this.token, id: ticketId },
       });
       return response.data;
     } catch (error: any) {
       console.error(`Erro ao buscar ticket ${ticketId}:`, error.message);
-      if (error.response) {
-        console.error('HTTP Status:', error.response.status);
-        console.error('Data:', JSON.stringify(error.response.data));
-      }
+      if (error.response) console.error('HTTP:', error.response.status, JSON.stringify(error.response.data));
       return null;
     }
   }
 
-  // Cria nota interna no ticket
+  /**
+   * Cria nota interna no ticket
+   */
   async createInternalNote(params: CreateNoteParams): Promise<boolean> {
     try {
       console.error(`Criando nota no ticket ${params.ticketId}`);
@@ -123,9 +149,13 @@ export class MovideskClient {
       return true;
     } catch (error: any) {
       console.error('Erro ao criar nota:', error.message);
-      if (error.response) console.error('Data:', JSON.stringify(error.response.data));
+      if (error.response) console.error('HTTP:', error.response.status, JSON.stringify(error.response.data));
       return false;
     }
+  }
+
+  formatN1Note(missingFields: string[]): string {
+    return `ANALISE N1 - TICKET INCOMPLETO\n\nFaltam:\n${missingFields.map(f => `- ${f}`).join('\n')}\n\nSolicite as informacoes ao cliente.`;
   }
 }
 

@@ -14,7 +14,7 @@ const __dirname = path.dirname(__filename);
 const movideskClient = getMovideskClient();
 
 const server = new Server(
-  { name: 'movidesk-queue', version: '2.1.0' },
+  { name: 'movidesk-queue', version: '2.2.0' },
   { capabilities: { tools: {} } }
 );
 
@@ -23,9 +23,10 @@ const N1_JUSTIFICATIVAS = ['Retorno do cliente', 'Retorno do newcon', 'Priorizac
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
+    // ─── N1 TOOLS ───────────────────────────────────────────
     {
       name: 'list_n1_tickets',
-      description: 'Lista tickets sob responsabilidade do N1: Novo, Em atendimento, e Aguardando com justificativas de retorno do cliente/newcon/priorizacao.',
+      description: 'Lista tickets sob responsabilidade do N1: status Novo, Em atendimento, e Aguardando com justificativas Retorno do cliente / Retorno do newcon / Priorizacao.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -35,7 +36,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'analyze_ticket_n1',
-      description: 'Analisa UM ticket usando o agente N1. Passe o ID do ticket. Gera orientacao para o analista e resposta para o cliente. Pede aprovacao antes de criar nota.',
+      description: 'Analisa UM ticket usando o agente N1. Gera orientacao para o analista e resposta para o cliente. Pede aprovacao antes de criar nota.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -56,6 +57,36 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['ticket_id', 'note_content'],
       },
     },
+    // ─── ADMIN TOOLS ────────────────────────────────────────
+    {
+      name: 'admin_list_tickets',
+      description: 'ADMIN: Lista todos os tickets do Movidesk. Pode filtrar por status especifico (ex: Novo, Em atendimento, Aguardando, Resolvido, Fechado, Cancelado) ou listar todos. Use quando o usuario pedir "liste todos os tickets" ou "liste tickets com status X".',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          status: {
+            type: 'string',
+            description: 'Status para filtrar (ex: Novo, Em atendimento, Aguardando, Resolvido, Fechado, Cancelado). Deixe vazio para listar todos.',
+          },
+          limit: {
+            type: 'number',
+            description: 'Numero maximo de tickets (padrao: 50, maximo: 200)',
+            default: 50,
+          },
+        },
+      },
+    },
+    {
+      name: 'admin_get_ticket',
+      description: 'ADMIN: Busca detalhes completos de um ticket especifico pelo ID.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ticket_id: { type: 'string', description: 'ID do ticket' },
+        },
+        required: ['ticket_id'],
+      },
+    },
   ],
 }));
 
@@ -65,6 +96,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
 
+      // ─── N1 ─────────────────────────────────────────────────
       case 'list_n1_tickets': {
         const limit = Math.min((args as any).limit || 10, 50);
         const [novos, emAtendimento, aguardando] = await Promise.all([
@@ -104,7 +136,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{
             type: 'text',
-            text: `# TICKET ${ticketId}\n\n- **ID**: ${ticket.id}\n- **Assunto**: ${ticket.subject}\n- **Status**: ${ticket.status}\n- **Justificativa**: ${ticket.justification || 'N/A'}\n- **Criado em**: ${ticket.createdDate}\n\n## Descricao\n\n${descricao}\n\n---\n\n## Instrucoes\n\nAnalise o ticket seguindo o prompt N1 abaixo. Gere a orientacao para o analista e a resposta para o cliente. Mostre tudo ao usuario e pergunte: "Posso criar esta nota interna no ticket ${ticketId}?" Aguarde aprovacao antes de chamar create_note_approved.\n\n---\n\n${promptN1}`,
+            text: `# TICKET ${ticketId}\n\n- **ID**: ${ticket.id}\n- **Assunto**: ${ticket.subject}\n- **Status**: ${ticket.status}\n- **Justificativa**: ${(ticket as any).justificativa || 'N/A'}\n- **Criado em**: ${ticket.createdDate}\n\n## Descricao\n\n${descricao}\n\n---\n\n## Instrucoes\n\nAnalise o ticket seguindo o prompt N1 abaixo. Gere a orientacao para o analista e a resposta para o cliente. Mostre tudo ao usuario e pergunte: "Posso criar esta nota interna no ticket ${ticketId}?" Aguarde aprovacao antes de chamar create_note_approved.\n\n---\n\n${promptN1}`,
           }],
         };
       }
@@ -129,6 +161,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         throw new Error('Falha ao criar nota');
       }
 
+      // ─── ADMIN ──────────────────────────────────────────────
+      case 'admin_list_tickets': {
+        const status = (args as any).status || null;
+        const limit = Math.min((args as any).limit || 50, 200);
+        const tickets = await movideskClient.adminListTickets(status, limit);
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              total: tickets.length,
+              filtro_status: status || 'todos',
+              tickets: tickets.map(t => ({
+                id: t.id,
+                subject: t.subject,
+                status: t.status,
+                justificativa: (t as any).justificativa || null,
+                createdDate: t.createdDate,
+              })),
+            }, null, 2),
+          }],
+        };
+      }
+
+      case 'admin_get_ticket': {
+        const ticketId = (args as any).ticket_id;
+        if (!ticketId) throw new Error('ticket_id e obrigatorio');
+        const ticket = await movideskClient.getTicket(ticketId);
+        if (!ticket) throw new Error(`Ticket ${ticketId} nao encontrado`);
+        return {
+          content: [{ type: 'text', text: JSON.stringify(ticket, null, 2) }],
+        };
+      }
+
       default:
         throw new Error(`Tool desconhecida: ${name}`);
     }
@@ -143,7 +208,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('Movidesk MCP v2.1 - Pronto!');
+  console.error('Movidesk MCP v2.2 - Pronto!');
 }
 
 main().catch((error) => {
