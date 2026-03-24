@@ -6,8 +6,9 @@
  * - id, protocol, subject, status, justification, createdDate
  * - $select obrigatorio ao listar multiplos tickets
  * - $filter suporta OData: status eq 'Novo'
- * - $top: limite de registros por request (max recomendado: 1000)
- * - Nota interna: PATCH /tickets com action type=2, isInternal=true, id=0
+ * - $top: limite de registros por request
+ * - Nota INTERNA: action type=1 (Interna), isInternal=true, id=0 (nova action)
+ * - Nota PUBLICA: action type=2 (Publica)
  * - Rota /tickets retorna tickets com lastupdate < 90 dias
  */
 
@@ -44,10 +45,6 @@ export class MovideskClient {
     });
   }
 
-  /**
-   * Lista TODOS os tickets de um status via $filter da API.
-   * Usa $top alto para garantir que nao perde nenhum ticket.
-   */
   async listTicketsByStatus(status: string): Promise<MovideskTicket[]> {
     try {
       console.error(`Buscando tickets status=${status}...`);
@@ -69,14 +66,6 @@ export class MovideskClient {
     }
   }
 
-  /**
-   * Lista TODOS os tickets Aguardando com justificativas do N1.
-   * Busca todos os Aguardando via $filter e filtra localmente pelas justificativas.
-   * Justificativas N1 (nomes EXATOS do Movidesk):
-   *   - Retorno do cliente
-   *   - Retorno NewCon
-   *   - Priorizacao
-   */
   async listTicketsAguardandoN1(justificativas: string[]): Promise<MovideskTicket[]> {
     try {
       console.error('Buscando tickets Aguardando N1...');
@@ -105,10 +94,6 @@ export class MovideskClient {
     }
   }
 
-  /**
-   * ADMIN: Lista tickets com filtro de status opcional.
-   * limit controla quantos retornar para o usuario.
-   */
   async adminListTickets(status: string | null, limit: number = 50): Promise<MovideskTicket[]> {
     try {
       console.error(`ADMIN: Buscando tickets... status=${status || 'todos'}`);
@@ -134,10 +119,6 @@ export class MovideskClient {
     }
   }
 
-  /**
-   * Busca ticket completo por ID.
-   * Sem $select para retornar todos os campos incluindo actions/descricao.
-   */
   async getTicket(ticketId: string): Promise<MovideskTicket | null> {
     try {
       const response = await this.httpClient.get('/tickets', {
@@ -152,15 +133,20 @@ export class MovideskClient {
   }
 
   /**
-   * Cria nota interna no ticket.
-   * type=2 = nota interna, isInternal=true, id=0 = nova action.
+   * Cria nota INTERNA no ticket.
+   *
+   * CONFIRMADO PELA DOCUMENTACAO OFICIAL:
+   * action.type = 1  => Interna (nao visivel ao cliente)
+   * action.type = 2  => Publica (visivel ao cliente)
+   *
+   * Usamos type=1 para garantir que a nota e sempre interna.
    */
   async createInternalNote(params: CreateNoteParams): Promise<boolean> {
     try {
-      console.error(`Criando nota no ticket ${params.ticketId}`);
+      console.error(`Criando nota INTERNA no ticket ${params.ticketId}`);
       const action = {
-        id: 0,
-        type: 2,
+        id: 0,        // 0 = nova action (nao alteracao)
+        type: 1,      // 1 = INTERNA (confirmado pela doc oficial)
         description: params.description,
         isInternal: true,
       };
@@ -169,7 +155,7 @@ export class MovideskClient {
         { id: params.ticketId, actions: [action] },
         { params: { token: this.token, id: params.ticketId } }
       );
-      console.error('Nota criada com sucesso');
+      console.error('Nota interna criada com sucesso');
       return true;
     } catch (error: any) {
       console.error('Erro ao criar nota:', error.message);
