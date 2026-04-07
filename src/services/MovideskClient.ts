@@ -1,13 +1,15 @@
 /**
- * Movidesk API Client v2.9.1
+ * Movidesk API Client v2.9.2
  *
- * NOTAS DA API MOVIDESK:
- * - /tickets sem filtro retorna apenas tickets com lastUpdate nos ultimos 90 dias
- * - $filter por createdDate filtra data de criacao (pode excluir tickets antigos ainda ativos)
- * - $filter por lastUpdate filtra ultima atualizacao (melhor para "ativos nos ultimos N dias")
- * - $orderby NAO pode ser usado junto com $filter (retorna 0 resultados silenciosamente)
- * - $top maximo: 1000 por pagina
- * - $skip: paginacao offset
+ * NOTAS DA API MOVIDESK (confirmado pela documentacao oficial):
+ * - /tickets retorna tickets com lastUpdate nos ultimos 90 dias (sem filtro)
+ * - /tickets/past retorna tickets com lastUpdate do dia anterior em diante (historico)
+ * - $filter + $orderby funcionam juntos normalmente
+ * - Formato de data OBRIGATORIO: ISO 8601 com sufixo 'z' (UTC)
+ *   Ex correto:   createdDate gt 2016-09-01T00:00:00.00z
+ *   Ex ERRADO:    createdDate gt 2016-09-01T00:00:00      <- ignora silenciosamente
+ * - $top maximo: 1000 por pagina; usar $skip para paginar
+ * - Filtro por lastUpdate captura tickets COM ATIVIDADE no periodo (melhor que createdDate para relatorios)
  */
 
 import axios, { AxiosInstance } from 'axios';
@@ -66,8 +68,8 @@ export interface MovideskTicketFull {
 
 export interface ExportAllTicketsParams {
   status?: string | null;
-  dateFrom?: string | null;    // filtra por lastUpdate >= dateFrom (tickets atualizados a partir desta data)
-  dateTo?: string | null;      // filtra por lastUpdate <= dateTo
+  dateFrom?: string | null;   // YYYY-MM-DD — filtra por lastUpdate >= dateFrom
+  dateTo?: string | null;     // YYYY-MM-DD — filtra por lastUpdate <= dateTo
   includeActions?: boolean;
   includeCustomFields?: boolean;
   includeClients?: boolean;
@@ -247,16 +249,16 @@ export class MovideskClient {
     else if (includeCustomFields)                  selectFields = SELECT_WITH_CUSTOM;
     else                                           selectFields = SELECT_REPORT_BASE;
 
-    // FIX: usar lastUpdate para filtrar tickets "ativos nos ultimos N dias"
-    // createdDate filtraria apenas tickets CRIADOS nesse periodo, excluindo tickets
-    // antigos que continuam sendo movimentados. lastUpdate captura todos os tickets
-    // que tiveram qualquer atividade no periodo.
-    // FIX: $orderby NAO pode ser combinado com $filter na API do Movidesk
-    // (retorna 0 resultados silenciosamente). Removido $orderby quando ha filtros.
+    // CRITICO: formato da data deve ter sufixo 'z' (UTC) — sem isso a API ignora
+    // o filtro silenciosamente e retorna 0 resultados ou resultados incorretos.
+    // Confirmado pela documentacao oficial:
+    //   GET /tickets?$filter=createdDate gt 2016-09-01T00:00:00.00z
+    // Filtro por lastUpdate (nao createdDate) garante que tickets antigos
+    // ainda em andamento tambem sejam incluidos no periodo solicitado.
     const filters: string[] = [];
     if (status)   filters.push(`status eq '${status}'`);
-    if (dateFrom) filters.push(`lastUpdate ge '${dateFrom}T00:00:00'`);
-    if (dateTo)   filters.push(`lastUpdate le '${dateTo}T23:59:59'`);
+    if (dateFrom) filters.push(`lastUpdate ge '${dateFrom}T00:00:00.000z'`);
+    if (dateTo)   filters.push(`lastUpdate le '${dateTo}T23:59:59.999z'`);
     const $filter = filters.length > 0 ? filters.join(' and ') : undefined;
 
     const PAGE_SIZE = 1000;
@@ -264,30 +266,28 @@ export class MovideskClient {
     let allTickets: MovideskTicketFull[] = [];
     let hasMore = true;
 
-    console.error(`EXPORT: Iniciando. Filtros: status=${status||'todos'} | lastUpdate de ${dateFrom||'sem limite'} ate ${dateTo||'sem limite'}`);
+    console.error(`EXPORT: Iniciando. status=${status||'todos'} | lastUpdate de ${dateFrom||'90d janela auto'} ate ${dateTo||'hoje'}`);
+    if ($filter) console.error(`EXPORT: $filter=${$filter}`);
 
     while (hasMore) {
       console.error(`EXPORT: Pagina ${page} (skip=${skip})...`);
 
-      // IMPORTANTE: so incluir $orderby quando NAO ha $filter ativo
+      // $filter e $orderby funcionam juntos normalmente (doc oficial confirmada)
       const requestParams: any = {
         token: this.token,
         $select: selectFields,
         $top: PAGE_SIZE,
         $skip: skip,
+        $orderby: 'lastUpdate desc',
       };
-      if ($filter) {
-        requestParams.$filter = $filter;
-        // sem $orderby quando ha $filter
-      } else {
-        requestParams.$orderby = 'lastUpdate desc';
-      }
+      if ($filter) requestParams.$filter = $filter;
 
       try {
         const response = await this.httpClient.get('/tickets', { params: requestParams });
         const data = Array.isArray(response.data) ? response.data : [response.data];
 
         if (data.length === 0 || (data.length === 1 && !data[0]?.id)) {
+          console.error(`EXPORT: Nenhum resultado na pagina ${page} — encerrando.`);
           hasMore = false;
           break;
         }
@@ -315,7 +315,7 @@ export class MovideskClient {
       pages: page,
       filters: {
         status: status || 'todos',
-        dateFrom: dateFrom || 'sem filtro',
+        dateFrom: dateFrom || 'sem filtro (janela 90d)',
         dateTo: dateTo || 'sem filtro',
         campo_data_filtrado: 'lastUpdate',
         includeActions,
