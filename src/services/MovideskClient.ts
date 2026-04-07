@@ -1,15 +1,13 @@
 /**
- * Movidesk API Client v2.9.2
+ * Movidesk API Client v2.9.6
  *
- * NOTAS DA API MOVIDESK (confirmado pela documentacao oficial):
+ * NOTAS DA API MOVIDESK:
  * - /tickets retorna tickets com lastUpdate nos ultimos 90 dias (sem filtro)
- * - /tickets/past retorna tickets com lastUpdate do dia anterior em diante (historico)
- * - $filter + $orderby funcionam juntos normalmente
+ * - $filter por createdDate: busca tickets criados no periodo informado
  * - Formato de data OBRIGATORIO: ISO 8601 com sufixo 'z' (UTC)
- *   Ex correto:   createdDate gt 2016-09-01T00:00:00.00z
- *   Ex ERRADO:    createdDate gt 2016-09-01T00:00:00      <- ignora silenciosamente
- * - $top maximo: 1000 por pagina; usar $skip para paginar
- * - Filtro por lastUpdate captura tickets COM ATIVIDADE no periodo (melhor que createdDate para relatorios)
+ *   Ex: createdDate ge '2026-02-06T00:00:00.000z'
+ * - $filter + $orderby funcionam juntos
+ * - $top maximo: 1000; usar $skip para paginar
  */
 
 import axios, { AxiosInstance } from 'axios';
@@ -27,8 +25,8 @@ export interface MovideskTicket {
 export interface StatusHistory {
   status: string;
   justification?: string;
-  permanencyTimeWorkingTime?: number; // minutos uteis
-  permanencyTime?: number;            // minutos totais
+  permanencyTimeWorkingTime?: number;
+  permanencyTime?: number;
   date?: string;
 }
 
@@ -68,8 +66,8 @@ export interface MovideskTicketFull {
 
 export interface ExportAllTicketsParams {
   status?: string | null;
-  dateFrom?: string | null;   // YYYY-MM-DD — filtra por lastUpdate >= dateFrom
-  dateTo?: string | null;     // YYYY-MM-DD — filtra por lastUpdate <= dateTo
+  dateFrom?: string | null;   // YYYY-MM-DD — filtra por createdDate >= dateFrom
+  dateTo?: string | null;     // YYYY-MM-DD — filtra por createdDate <= dateTo
   includeActions?: boolean;
   includeCustomFields?: boolean;
   includeClients?: boolean;
@@ -249,16 +247,12 @@ export class MovideskClient {
     else if (includeCustomFields)                  selectFields = SELECT_WITH_CUSTOM;
     else                                           selectFields = SELECT_REPORT_BASE;
 
-    // CRITICO: formato da data deve ter sufixo 'z' (UTC) — sem isso a API ignora
-    // o filtro silenciosamente e retorna 0 resultados ou resultados incorretos.
-    // Confirmado pela documentacao oficial:
-    //   GET /tickets?$filter=createdDate gt 2016-09-01T00:00:00.00z
-    // Filtro por lastUpdate (nao createdDate) garante que tickets antigos
-    // ainda em andamento tambem sejam incluidos no periodo solicitado.
+    // Filtro por createdDate: tickets CRIADOS no periodo informado.
+    // Sufixo 'z' obrigatorio para UTC — sem ele a API ignora o filtro silenciosamente.
     const filters: string[] = [];
     if (status)   filters.push(`status eq '${status}'`);
-    if (dateFrom) filters.push(`lastUpdate ge '${dateFrom}T00:00:00.000z'`);
-    if (dateTo)   filters.push(`lastUpdate le '${dateTo}T23:59:59.999z'`);
+    if (dateFrom) filters.push(`createdDate ge '${dateFrom}T00:00:00.000z'`);
+    if (dateTo)   filters.push(`createdDate le '${dateTo}T23:59:59.999z'`);
     const $filter = filters.length > 0 ? filters.join(' and ') : undefined;
 
     const PAGE_SIZE = 1000;
@@ -266,19 +260,18 @@ export class MovideskClient {
     let allTickets: MovideskTicketFull[] = [];
     let hasMore = true;
 
-    console.error(`EXPORT: Iniciando. status=${status||'todos'} | lastUpdate de ${dateFrom||'90d janela auto'} ate ${dateTo||'hoje'}`);
+    console.error(`EXPORT: Iniciando. status=${status || 'todos'} | createdDate de ${dateFrom || 'sem limite'} ate ${dateTo || 'sem limite'}`);
     if ($filter) console.error(`EXPORT: $filter=${$filter}`);
 
     while (hasMore) {
       console.error(`EXPORT: Pagina ${page} (skip=${skip})...`);
 
-      // $filter e $orderby funcionam juntos normalmente (doc oficial confirmada)
       const requestParams: any = {
         token: this.token,
         $select: selectFields,
         $top: PAGE_SIZE,
         $skip: skip,
-        $orderby: 'lastUpdate desc',
+        $orderby: 'createdDate desc',
       };
       if ($filter) requestParams.$filter = $filter;
 
@@ -315,9 +308,9 @@ export class MovideskClient {
       pages: page,
       filters: {
         status: status || 'todos',
-        dateFrom: dateFrom || 'sem filtro (janela 90d)',
+        dateFrom: dateFrom || 'sem filtro',
         dateTo: dateTo || 'sem filtro',
-        campo_data_filtrado: 'lastUpdate',
+        campo_data_filtrado: 'createdDate',
         includeActions,
         includeCustomFields,
         includeClients,
@@ -327,11 +320,6 @@ export class MovideskClient {
     };
   }
 
-  /**
-   * Busca statusHistories de uma lista de IDs em lote com concorrencia controlada.
-   * statusHistories so existe no endpoint individual do ticket (/tickets?id=X).
-   * Retorna map: ticketId -> StatusHistory[]
-   */
   async fetchStatusHistoriesBatch(
     ticketIds: string[],
     concurrency: number = 5
@@ -404,12 +392,10 @@ export class MovideskClient {
         justificativasEncontradas.add(ticket.justification || '');
       }
 
-      // ---- StatusHistories ----
       const histories: StatusHistory[] = statusHistoriesMap?.[ticket.id] ?? ticket.statusHistories ?? [];
 
       for (let i = 0; i < histories.length; i++) {
         const h = histories[i], next = histories[i + 1];
-
         if (h.status === 'Novo' && next?.status === STATUS_EM_ATENDIMENTO) {
           const min = h.permanencyTimeWorkingTime ?? h.permanencyTime;
           if (min != null && min >= 0) transNovoParaAtendimento.push(min / 60);
@@ -433,7 +419,6 @@ export class MovideskClient {
         aguardandoPorJustificativa[j] = (aguardandoPorJustificativa[j] || 0) + 1;
       }
 
-      // ---- Actions ----
       const actions: any[] = ticket.actions || [];
 
       const primeiraPublica = actions
