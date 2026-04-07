@@ -14,11 +14,10 @@ const __dirname = path.dirname(__filename);
 const movideskClient = getMovideskClient();
 
 const server = new Server(
-  { name: 'movidesk-queue', version: '2.7.0' },
+  { name: 'movidesk-queue', version: '2.8.0' },
   { capabilities: { tools: {} } }
 );
 
-// Justificativas N1 - nomes EXATOS conforme CSV exportado do Movidesk
 const N1_JUSTIFICATIVAS = [
   'Retorno do cliente',
   'Retorno NewCon',
@@ -38,8 +37,11 @@ function loadContext(papel: string): string {
     n2: 'Agentes/N2_PAPEL.md',
     n3: 'Agentes/N3_PAPEL.md',
     admin: 'Agentes/ADMIN_PAPEL.md',
+    gestor: 'Agentes/GESTOR_PAPEL.md',
   };
   const papelContent = loadPrompt(arquivos[papel] || 'ORQUESTRADOR.md');
+  // Gestor nao precisa do webhook
+  if (papel === 'gestor') return papelContent;
   const webhookContent = loadPrompt('Webhook/AGENTE_WEBHOOK.md');
   return `${papelContent}\n\n---\n\n${webhookContent}`;
 }
@@ -54,23 +56,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           papel: {
             type: 'string',
-            description: 'Papel a carregar: orquestrador (padrao), n1, n2, n3, admin',
-            enum: ['orquestrador', 'n1', 'n2', 'n3', 'admin'],
+            description: 'Papel a carregar: orquestrador (padrao), n1, n2, n3, admin, gestor',
+            enum: ['orquestrador', 'n1', 'n2', 'n3', 'admin', 'gestor'],
           },
         },
       },
     },
     {
       name: 'list_n1_tickets',
-      description: 'N1: Lista TODOS os tickets da fila N1 - status Novo, Em atendimento, e Aguardando com justificativas Retorno do cliente / Retorno NewCon / Priorizacao. Retorna todos sem limite.',
-      inputSchema: {
-        type: 'object',
-        properties: {},
-      },
+      description: 'N1: Lista TODOS os tickets da fila N1 - status Novo, Em atendimento, e Aguardando com justificativas Retorno do cliente / Retorno NewCon / Priorizacao.',
+      inputSchema: { type: 'object', properties: {} },
     },
     {
       name: 'analyze_ticket_n1',
-      description: 'N1: Busca dados completos de um ticket e carrega base de conhecimento N1. Use o retorno para gerar a analise, mostrar ao usuario e pedir aprovacao antes de criar nota.',
+      description: 'N1: Busca dados completos de um ticket e carrega base de conhecimento N1.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -81,24 +80,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'create_note_approved',
-      description: 'N1: Cria nota INTERNA no ticket. Use SOMENTE apos aprovacao explicita do usuario (sim, pode, aprovo, ok).',
+      description: 'N1: Cria nota INTERNA no ticket. Use SOMENTE apos aprovacao explicita do usuario.',
       inputSchema: {
         type: 'object',
         properties: {
-          ticket_id: { type: 'string', description: 'ID do ticket' },
-          note_content: { type: 'string', description: 'Conteudo completo da nota interna gerada' },
+          ticket_id: { type: 'string' },
+          note_content: { type: 'string' },
         },
         required: ['ticket_id', 'note_content'],
       },
     },
     {
       name: 'admin_list_tickets',
-      description: 'ADMIN: Lista tickets do Movidesk. Informe status para filtrar (Novo, Em atendimento, Aguardando, Resolvido, Fechado, Cancelado, Recorrente) ou deixe vazio para todos.',
+      description: 'ADMIN: Lista tickets do Movidesk com filtro opcional de status.',
       inputSchema: {
         type: 'object',
         properties: {
           status: { type: 'string', description: 'Status para filtrar. Vazio = todos.' },
-          limit: { type: 'number', description: 'Maximo de tickets (padrao: 50)', default: 50 },
+          limit: { type: 'number', default: 50 },
         },
       },
     },
@@ -108,45 +107,39 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          ticket_id: { type: 'string', description: 'ID do ticket' },
+          ticket_id: { type: 'string' },
         },
         required: ['ticket_id'],
       },
     },
     {
       name: 'export_all_tickets',
-      description: 'RELATORIO: Exporta TODOS os tickets do Movidesk com paginacao automatica e campos completos para montagem de relatorios e metricas. Suporta filtros por status e periodo. ATENCAO: pode demorar varios minutos dependendo do volume de tickets.',
+      description: 'RELATORIO/GESTOR: Exporta TODOS os tickets do Movidesk com paginacao automatica e campos completos. Suporta filtros por status e periodo. Pode demorar varios minutos.',
       inputSchema: {
         type: 'object',
         properties: {
-          status: {
-            type: 'string',
-            description: 'Filtrar por status especifico (Novo, Em atendimento, Aguardando, Resolvido, Fechado, Cancelado, Recorrente). Omitir para buscar todos os status.',
-          },
-          date_from: {
-            type: 'string',
-            description: 'Data inicio para filtrar por createdDate (formato: YYYY-MM-DD, ex: 2024-01-01). Omitir para sem limite.',
-          },
-          date_to: {
-            type: 'string',
-            description: 'Data fim para filtrar por createdDate (formato: YYYY-MM-DD, ex: 2024-12-31). Omitir para sem limite.',
-          },
-          include_actions: {
-            type: 'boolean',
-            description: 'Se true, inclui historico completo de acoes/interacoes de cada ticket (muito mais pesado, pode ser lento). Padrao: false.',
-            default: false,
-          },
-          include_custom_fields: {
-            type: 'boolean',
-            description: 'Se true, inclui valores de campos customizados. Padrao: false.',
-            default: false,
-          },
-          include_clients: {
-            type: 'boolean',
-            description: 'Se true, inclui dados dos clientes vinculados ao ticket. Padrao: true.',
-            default: true,
+          status: { type: 'string', description: 'Filtrar por status especifico. Omitir para todos.' },
+          date_from: { type: 'string', description: 'Data inicio YYYY-MM-DD.' },
+          date_to: { type: 'string', description: 'Data fim YYYY-MM-DD.' },
+          include_actions: { type: 'boolean', default: false, description: 'Incluir historico de acoes (necessario para metricas de tempo).' },
+          include_custom_fields: { type: 'boolean', default: false },
+          include_clients: { type: 'boolean', default: true },
+        },
+      },
+    },
+    {
+      name: 'generate_metrics',
+      description: 'GESTOR: Calcula metricas completas de desempenho do suporte a partir dos tickets exportados por export_all_tickets. Retorna: tempo de resposta ao cliente, tempo nos status iniciais (Em atendimento / Aguardando Retorno), tempo de triagem ate Analise Projetos, % de tickets que voltam por falta de informacao, tempo em Analise Projetos, tempo para retorno com direcionamento, quantidade de interacoes com cliente e tickets encerrados na fase.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          tickets: {
+            type: 'array',
+            description: 'Array de tickets retornado pelo campo "tickets" do export_all_tickets. Deve incluir actions (use include_actions: true no export).',
+            items: { type: 'object' },
           },
         },
+        required: ['tickets'],
       },
     },
   ],
@@ -175,11 +168,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             type: 'text',
             text: JSON.stringify({
               total: novos.length + emAtendimento.length + aguardando.length,
-              resumo: {
-                novo: novos.length,
-                em_atendimento: emAtendimento.length,
-                aguardando_n1: aguardando.length,
-              },
+              resumo: { novo: novos.length, em_atendimento: emAtendimento.length, aguardando_n1: aguardando.length },
               tickets: [
                 ...novos.map(t => ({ ...t, grupo: 'Novo' })),
                 ...emAtendimento.map(t => ({ ...t, grupo: 'Em atendimento' })),
@@ -196,8 +185,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const ticket = await movideskClient.getTicket(ticketId);
         if (!ticket) throw new Error(`Ticket ${ticketId} nao encontrado`);
         const n1Papel = loadPrompt('Agentes/N1_PAPEL.md');
-        const descricao = ticket.actions && ticket.actions.length > 0
-          ? ticket.actions[0].description : 'Sem descricao disponivel';
+        const descricao = ticket.actions?.length ? ticket.actions[0].description : 'Sem descricao disponivel';
         return {
           content: [{
             type: 'text',
@@ -261,39 +249,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           dateTo: a.date_to || null,
           includeActions: a.include_actions === true,
           includeCustomFields: a.include_custom_fields === true,
-          includeClients: a.include_clients !== false, // padrao true
+          includeClients: a.include_clients !== false,
         });
 
-        // Monta resumo de metricas basicas junto com os dados brutos
+        // Metricas rapidas de resumo junto com os dados brutos
         const statusCount: Record<string, number> = {};
         const categoryCount: Record<string, number> = {};
         const ownerTeamCount: Record<string, number> = {};
         let resolvedInFirstCallCount = 0;
         let withSlaBreached = 0;
+        const openStatuses = ['Novo', 'Em atendimento', 'Aguardando', 'Recorrente'];
 
         for (const t of result.tickets) {
-          // Contagem por status
           const s = t.status || 'Desconhecido';
           statusCount[s] = (statusCount[s] || 0) + 1;
-
-          // Contagem por categoria
           const c = t.category || 'Sem categoria';
           categoryCount[c] = (categoryCount[c] || 0) + 1;
-
-          // Contagem por equipe
           const ot = t.ownerTeam || 'Sem equipe';
           ownerTeamCount[ot] = (ownerTeamCount[ot] || 0) + 1;
-
-          // Resolvidos no primeiro contato
           if (t.resolvedInFirstCall) resolvedInFirstCallCount++;
-
-          // SLA vencido (slaSolutionDate < now e status nao eh Resolvido/Fechado/Cancelado)
-          const openStatuses = ['Novo', 'Em atendimento', 'Aguardando', 'Recorrente'];
-          if (
-            t.slaSolutionDate &&
-            new Date(t.slaSolutionDate) < new Date() &&
-            openStatuses.includes(t.status || '')
-          ) {
+          if (t.slaSolutionDate && new Date(t.slaSolutionDate) < new Date() && openStatuses.includes(t.status || '')) {
             withSlaBreached++;
           }
         }
@@ -319,6 +294,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      case 'generate_metrics': {
+        const a = args as any;
+        const tickets = a.tickets;
+        if (!Array.isArray(tickets)) throw new Error('"tickets" deve ser um array de tickets do export_all_tickets');
+        if (tickets.length === 0) throw new Error('Nenhum ticket fornecido para calcular metricas');
+
+        const metricas = movideskClient.generateMetrics(tickets);
+
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(metricas, null, 2),
+          }],
+        };
+      }
+
       default:
         throw new Error(`Tool desconhecida: ${name}`);
     }
@@ -333,7 +324,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('Movidesk MCP v2.7 - Pronto!');
+  console.error('Movidesk MCP v2.8 - Pronto!');
 }
 
 main().catch((error) => {

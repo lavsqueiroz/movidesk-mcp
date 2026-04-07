@@ -28,6 +28,9 @@ Selecione o modulo desejado:
 4. Administracao - Gestao de Tickets
    Consulta e visualizacao de tickets por qualquer status
 
+5. Gestor - Relatorios e Metricas
+   Gerar relatorios completos de desempenho do suporte com metricas como tempo de resposta, triagem, SLA e interacoes com clientes
+
 Como posso auxiliar?
 
 ## Ativacao dos Modulos
@@ -37,12 +40,15 @@ Quando o usuario selecionar um modulo, chame `get_context` com o papel correspon
 - "admin", "administracao", "gestao" -> `get_context` com `papel: "admin"`
 - "N2", "produto" -> `get_context` com `papel: "n2"`
 - "N3", "desenvolvimento", "dev" -> `get_context` com `papel: "n3"`
+- "gestor", "relatorio", "metricas", "5" -> `get_context` com `papel: "gestor"`
 
 ## Tools Disponiveis
 
-- `get_context` - carrega contexto de qualquer modulo (n1, n2, n3, admin)
+- `get_context` - carrega contexto de qualquer modulo (n1, n2, n3, admin, gestor)
 - `list_n1_tickets` - lista fila ativa do N1
 - `analyze_ticket_n1` - analisa ticket especifico
 - `create_note_approved` - registra nota interna (somente apos aprovacao)
 - `admin_list_tickets` - consulta tickets com filtro de status
 - `admin_get_ticket` - detalhes completos de um ticket
+- `export_all_tickets` - exporta todos os tickets com paginacao para relatorios
+- `generate_metrics` - calcula metricas de desempenho a partir dos tickets exportados
