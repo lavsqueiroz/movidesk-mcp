@@ -13,7 +13,7 @@ const __dirname  = path.dirname(__filename);
 const movideskClient = getMovideskClient();
 
 const server = new Server(
-  { name: 'movidesk-queue', version: '2.9.5' },
+  { name: 'movidesk-queue', version: '3.0.0' },
   { capabilities: { tools: {} } }
 );
 
@@ -50,8 +50,6 @@ function daysAgo(n: number): string {
 function todayStr(): string {
   return new Date().toISOString().split('T')[0];
 }
-
-// Retorna media arredondada em 2 casas, ou null se array vazio
 function avgOrNull(arr: number[]): number | null {
   if (!arr.length) return null;
   return Math.round((arr.reduce((s, v) => s + v, 0) / arr.length) * 100) / 100;
@@ -92,15 +90,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'export_all_tickets',
       description:
-        'RELATORIO/GESTOR: Exporta tickets filtrados por lastUpdate (ultimos 60 dias por padrao). ' +
+        'RELATORIO/GESTOR: Exporta TODOS os tickets da janela de 90 dias da API do Movidesk (sem filtro de data na query — filtragem por periodo feita em memoria apos busca). ' +
         'Sempre inclui actions (necessario para metricas). ' +
-        'Retorna: total, periodo, resumo (dados pre-calculados prontos para o HTML), e tickets[].',
+        'Filtro de status opcional (aplicado na query). ' +
+        'Filtro de data opcional (aplicado em memoria sobre createdDate). ' +
+        'Retorna: total, periodo, resumo com dados pre-calculados, e tickets[].',
       inputSchema: {
         type: 'object',
         properties: {
-          status:                { type: 'string',  description: 'Filtrar por status. Omitir para todos.' },
-          date_from:             { type: 'string',  description: 'YYYY-MM-DD. Padrao: 60 dias atras.' },
-          date_to:               { type: 'string',  description: 'YYYY-MM-DD. Padrao: hoje.' },
+          status:                { type: 'string',  description: 'Filtrar por status na API. Omitir para todos.' },
+          date_from:             { type: 'string',  description: 'YYYY-MM-DD. Filtra em memoria por createdDate >= data. Padrao: 60 dias atras.' },
+          date_to:               { type: 'string',  description: 'YYYY-MM-DD. Filtra em memoria por createdDate <= data. Padrao: hoje.' },
           include_custom_fields: { type: 'boolean', default: false },
           include_clients:       { type: 'boolean', default: true },
         },
@@ -108,15 +108,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'get_tickets_status_histories',
-      description:
-        'GESTOR (OPCIONAL): Busca statusHistories individualmente por ticket (1 req/ticket). ' +
-        'Use apenas se total <= 150 para melhorar precisao das metricas de transicao. ' +
-        'Retorna status_histories_map para passar ao generate_metrics.',
+      description: 'GESTOR (OPCIONAL): Busca statusHistories individualmente por ticket (1 req/ticket). Use apenas se total <= 150.',
       inputSchema: {
         type: 'object',
         properties: {
           ticket_ids:  { type: 'array', items: { type: 'string' } },
-          concurrency: { type: 'number', default: 5, description: 'Max recomendado: 8.' },
+          concurrency: { type: 'number', default: 5 },
         },
         required: ['ticket_ids'],
       },
@@ -124,14 +121,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'generate_metrics',
       description:
-        'GESTOR: Calcula metricas de desempenho a partir dos tickets do export_all_tickets. ' +
-        'IMPORTANTE: passe apenas o array tickets[] (campo tickets do export), nao o objeto inteiro. ' +
-        'status_histories_map e opcional (melhora transicoes se disponivel). ' +
-        'Se passar o objeto raiz do export por engano, extrai tickets[] automaticamente.',
+        'GESTOR: Calcula metricas de desempenho a partir de um array de tickets. ' +
+        'Aceita tickets de qualquer origem (export_all_tickets ou admin_list_tickets com dados completos). ' +
+        'Se receber o objeto raiz do export, extrai tickets[] automaticamente.',
       inputSchema: {
         type: 'object',
         properties: {
-          tickets:              { description: 'Array tickets[] do export, ou o objeto raiz (auto-extraido).' },
+          tickets:              { description: 'Array de tickets ou objeto raiz do export (auto-extraido).' },
           status_histories_map: { type: 'object', description: 'Opcional. Do get_tickets_status_histories.' },
         },
         required: ['tickets'],
@@ -171,7 +167,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!ticketId) throw new Error('ticket_id e obrigatorio');
         const ticket = await movideskClient.getTicket(ticketId);
         if (!ticket) throw new Error(`Ticket ${ticketId} nao encontrado`);
-        const n1Papel  = loadPrompt('Agentes/N1_PAPEL.md');
+        const n1Papel   = loadPrompt('Agentes/N1_PAPEL.md');
         const descricao = (ticket as any).actions?.length ? (ticket as any).actions[0].description : 'Sem descricao';
         return { content: [{ type: 'text', text:
           `# TICKET ${ticketId}\n\n` +
@@ -220,17 +216,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const dateFrom = a.date_from || daysAgo(60);
         const dateTo   = a.date_to   || todayStr();
 
-        // Actions sempre ativas — obrigatorias para metricas de tempo e interacoes
+        // Busca todos os tickets sem filtro de data na query (evita problemas de encoding do $filter).
+        // O filtro de status e aplicado na query (ja funciona via admin_list_tickets).
+        // O filtro de data e aplicado em memoria sobre createdDate apos a busca.
         const result = await movideskClient.exportAllTickets({
           status:              a.status || null,
-          dateFrom,
-          dateTo,
+          dateFrom:            null,  // sem filtro de data na query
+          dateTo:              null,  // sem filtro de data na query
           includeActions:      true,
           includeCustomFields: a.include_custom_fields === true,
           includeClients:      a.include_clients !== false,
         });
 
-        // Metricas de resumo pre-calculadas — prontas para uso direto no HTML
+        // Aplica filtro de periodo em memoria por createdDate
+        const dateFromTs = new Date(dateFrom + 'T00:00:00.000Z').getTime();
+        const dateToTs   = new Date(dateTo   + 'T23:59:59.999Z').getTime();
+        const ticketsFiltrados = result.tickets.filter(t => {
+          if (!t.createdDate) return false;
+          const ts = new Date(t.createdDate).getTime();
+          return ts >= dateFromTs && ts <= dateToTs;
+        });
+
+        console.error(`EXPORT: Total bruto=${result.tickets.length} | Apos filtro ${dateFrom}->${dateTo}: ${ticketsFiltrados.length}`);
+
+        // Metricas de resumo pre-calculadas sobre os tickets ja filtrados
         const statusCount:   Record<string, number> = {};
         const categoryCount: Record<string, number> = {};
         const urgencyCount:  Record<string, number> = {};
@@ -244,43 +253,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const abFechHoras:  number[] = [];
         const distFechamento = { ate_24h: 0, d1_3: 0, d3_7: 0, mais_7d: 0 };
 
-        for (const t of result.tickets) {
-          // Status
+        for (const t of ticketsFiltrados) {
           const s = t.status || 'Desconhecido';
           statusCount[s] = (statusCount[s] || 0) + 1;
 
-          // Categoria
           const c = t.category || 'Sem categoria';
           categoryCount[c] = (categoryCount[c] || 0) + 1;
 
-          // Urgencia: numero -> label legivel
           const uLabel = (t.urgency != null && URGENCY_LABELS[t.urgency])
             ? URGENCY_LABELS[t.urgency]
             : (t.urgency != null ? String(t.urgency) : 'N/D');
           urgencyCount[uLabel] = (urgencyCount[uLabel] || 0) + 1;
 
-          // Resolvido no 1o contato
           if (t.resolvedInFirstCall) resolvedInFirstCallCount++;
 
-          // SLA vencido (apenas tickets abertos)
-          if (
-            t.slaSolutionDate &&
-            new Date(t.slaSolutionDate) < new Date() &&
-            openStatuses.includes(t.status || '')
-          ) withSlaBreached++;
+          if (t.slaSolutionDate && new Date(t.slaSolutionDate) < new Date() && openStatuses.includes(t.status || ''))
+            withSlaBreached++;
 
-          // Volume mensal por createdDate
           if (t.createdDate) {
             const d = new Date(t.createdDate);
             const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
             volumeMensal[key] = (volumeMensal[key] || 0) + 1;
           }
 
-          // Tempo de vida e parado (minutos -> horas)
-          if (t.lifeTimeWorkingTime != null)    lifeHours.push(t.lifeTimeWorkingTime / 60);
-          if (t.stoppedTimeWorkingTime != null)  stoppedHours.push(t.stoppedTimeWorkingTime / 60);
+          if (t.lifeTimeWorkingTime != null)   lifeHours.push(t.lifeTimeWorkingTime / 60);
+          if (t.stoppedTimeWorkingTime != null) stoppedHours.push(t.stoppedTimeWorkingTime / 60);
 
-          // Distribuicao tempo fechamento (por lifeTimeWorkingTime em horas)
           if (t.lifeTimeWorkingTime != null) {
             const h = t.lifeTimeWorkingTime / 60;
             if      (h <= 24)  distFechamento.ate_24h++;
@@ -289,7 +287,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             else               distFechamento.mais_7d++;
           }
 
-          // Tempo abertura -> fechamento real (horas)
           const fim = t.closedIn || t.resolvedIn;
           if (t.createdDate && fim) {
             const h = (new Date(fim).getTime() - new Date(t.createdDate).getTime()) / 3_600_000;
@@ -298,14 +295,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         return { content: [{ type: 'text', text: JSON.stringify({
-          exportedAt:    result.exportedAt,
-          total:         result.total,
-          pages_fetched: result.pages,
-          periodo:       { dateFrom, dateTo },
+          exportedAt:         result.exportedAt,
+          total:              ticketsFiltrados.length,
+          total_bruto_90d:    result.tickets.length,
+          pages_fetched:      result.pages,
+          periodo:            { dateFrom, dateTo },
+          filtro_aplicado_em: 'memoria (createdDate)',
 
-          // resumo: valores prontos para o HTML (tempos JA em horas, null = sem dados)
           resumo: {
-            total_tickets:                         result.total,
+            total_tickets:                         ticketsFiltrados.length,
             por_status:                            statusCount,
             por_categoria:                         categoryCount,
             por_urgencia:                          urgencyCount,
@@ -316,11 +314,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             tempo_medio_parado_horas:              avgOrNull(stoppedHours),
             tempo_medio_abertura_fechamento_horas: avgOrNull(abFechHoras),
             distribuicao_tempo_fechamento:         distFechamento,
-            tickets_com_data_fechamento:           result.tickets.filter(t => t.closedIn || t.resolvedIn).length,
+            tickets_com_data_fechamento:           ticketsFiltrados.filter(t => t.closedIn || t.resolvedIn).length,
           },
 
-          // tickets[]: passar para generate_metrics
-          tickets: result.tickets,
+          tickets: ticketsFiltrados,
         }, null, 2) }] };
       }
 
@@ -330,10 +327,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           throw new Error('ticket_ids deve ser um array nao vazio');
         if (ticket_ids.length > 200)
           console.error(`STATUS_HIST: AVISO — ${ticket_ids.length} tickets. Pode demorar minutos.`);
-        const map = await movideskClient.fetchStatusHistoriesBatch(
-          ticket_ids,
-          Math.min(concurrency || 5, 8)
-        );
+        const map = await movideskClient.fetchStatusHistoriesBatch(ticket_ids, Math.min(concurrency || 5, 8));
         return { content: [{ type: 'text', text: JSON.stringify({
           total_processados:    Object.keys(map).length,
           status_histories_map: map,
@@ -350,18 +344,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             ticketArray = tickets.tickets;
             console.error('METRICS: objeto raiz recebido — extraindo tickets[] automaticamente.');
           } else {
-            throw new Error(
-              'Passe o array tickets[] do export_all_tickets, ou o objeto raiz completo do export.'
-            );
+            throw new Error('Passe um array de tickets, ou o objeto raiz completo do export.');
           }
         }
         if (ticketArray.length === 0)
           throw new Error('Array de tickets vazio.');
 
-        const metricas = movideskClient.generateMetrics(
-          ticketArray,
-          status_histories_map || undefined
-        );
+        const metricas = movideskClient.generateMetrics(ticketArray, status_histories_map || undefined);
         return { content: [{ type: 'text', text: JSON.stringify(metricas, null, 2) }] };
       }
 
@@ -379,6 +368,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('Movidesk MCP v2.9.5 - Pronto!');
+  console.error('Movidesk MCP v3.0.0 - Pronto!');
 }
 main().catch(e => { console.error('Erro fatal:', e); process.exit(1); });
