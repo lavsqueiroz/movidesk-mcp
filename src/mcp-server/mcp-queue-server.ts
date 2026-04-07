@@ -14,7 +14,7 @@ const __dirname = path.dirname(__filename);
 const movideskClient = getMovideskClient();
 
 const server = new Server(
-  { name: 'movidesk-queue', version: '2.6.0' },
+  { name: 'movidesk-queue', version: '2.7.0' },
   { capabilities: { tools: {} } }
 );
 
@@ -22,7 +22,7 @@ const server = new Server(
 const N1_JUSTIFICATIVAS = [
   'Retorno do cliente',
   'Retorno NewCon',
-  'Priorização',
+  'Priorizacao',
 ];
 
 function loadPrompt(filename: string): string {
@@ -113,6 +113,42 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['ticket_id'],
       },
     },
+    {
+      name: 'export_all_tickets',
+      description: 'RELATORIO: Exporta TODOS os tickets do Movidesk com paginacao automatica e campos completos para montagem de relatorios e metricas. Suporta filtros por status e periodo. ATENCAO: pode demorar varios minutos dependendo do volume de tickets.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          status: {
+            type: 'string',
+            description: 'Filtrar por status especifico (Novo, Em atendimento, Aguardando, Resolvido, Fechado, Cancelado, Recorrente). Omitir para buscar todos os status.',
+          },
+          date_from: {
+            type: 'string',
+            description: 'Data inicio para filtrar por createdDate (formato: YYYY-MM-DD, ex: 2024-01-01). Omitir para sem limite.',
+          },
+          date_to: {
+            type: 'string',
+            description: 'Data fim para filtrar por createdDate (formato: YYYY-MM-DD, ex: 2024-12-31). Omitir para sem limite.',
+          },
+          include_actions: {
+            type: 'boolean',
+            description: 'Se true, inclui historico completo de acoes/interacoes de cada ticket (muito mais pesado, pode ser lento). Padrao: false.',
+            default: false,
+          },
+          include_custom_fields: {
+            type: 'boolean',
+            description: 'Se true, inclui valores de campos customizados. Padrao: false.',
+            default: false,
+          },
+          include_clients: {
+            type: 'boolean',
+            description: 'Se true, inclui dados dos clientes vinculados ao ticket. Padrao: true.',
+            default: true,
+          },
+        },
+      },
+    },
   ],
 }));
 
@@ -129,7 +165,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'list_n1_tickets': {
-        // Busca TODOS os tickets de cada status sem limite
         const [novos, emAtendimento, aguardando] = await Promise.all([
           movideskClient.listTicketsByStatus('Novo'),
           movideskClient.listTicketsByStatus('Em atendimento'),
@@ -218,6 +253,72 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: JSON.stringify(ticket, null, 2) }] };
       }
 
+      case 'export_all_tickets': {
+        const a = args as any;
+        const result = await movideskClient.exportAllTickets({
+          status: a.status || null,
+          dateFrom: a.date_from || null,
+          dateTo: a.date_to || null,
+          includeActions: a.include_actions === true,
+          includeCustomFields: a.include_custom_fields === true,
+          includeClients: a.include_clients !== false, // padrao true
+        });
+
+        // Monta resumo de metricas basicas junto com os dados brutos
+        const statusCount: Record<string, number> = {};
+        const categoryCount: Record<string, number> = {};
+        const ownerTeamCount: Record<string, number> = {};
+        let resolvedInFirstCallCount = 0;
+        let withSlaBreached = 0;
+
+        for (const t of result.tickets) {
+          // Contagem por status
+          const s = t.status || 'Desconhecido';
+          statusCount[s] = (statusCount[s] || 0) + 1;
+
+          // Contagem por categoria
+          const c = t.category || 'Sem categoria';
+          categoryCount[c] = (categoryCount[c] || 0) + 1;
+
+          // Contagem por equipe
+          const ot = t.ownerTeam || 'Sem equipe';
+          ownerTeamCount[ot] = (ownerTeamCount[ot] || 0) + 1;
+
+          // Resolvidos no primeiro contato
+          if (t.resolvedInFirstCall) resolvedInFirstCallCount++;
+
+          // SLA vencido (slaSolutionDate < now e status nao eh Resolvido/Fechado/Cancelado)
+          const openStatuses = ['Novo', 'Em atendimento', 'Aguardando', 'Recorrente'];
+          if (
+            t.slaSolutionDate &&
+            new Date(t.slaSolutionDate) < new Date() &&
+            openStatuses.includes(t.status || '')
+          ) {
+            withSlaBreached++;
+          }
+        }
+
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              exportedAt: result.exportedAt,
+              total: result.total,
+              pages_fetched: result.pages,
+              filters: result.filters,
+              metricas_basicas: {
+                por_status: statusCount,
+                por_categoria: categoryCount,
+                por_equipe: ownerTeamCount,
+                resolvidos_no_primeiro_contato: resolvedInFirstCallCount,
+                tickets_com_sla_vencido: withSlaBreached,
+              },
+              tickets: result.tickets,
+            }, null, 2),
+          }],
+        };
+      }
+
       default:
         throw new Error(`Tool desconhecida: ${name}`);
     }
@@ -232,7 +333,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('Movidesk MCP v2.6 - Pronto!');
+  console.error('Movidesk MCP v2.7 - Pronto!');
 }
 
 main().catch((error) => {
